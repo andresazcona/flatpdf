@@ -3,7 +3,7 @@ import { GlobalFonts } from '@napi-rs/canvas';
 import { PDFJS_ROOT } from './rasterize.js';
 
 // Lambda images ship no system fonts, so use the Liberation Sans bundled with pdfjs-dist (SIL OFL).
-const FONT = 'flatpdf-sans';
+export const FONT = 'flatpdf-sans';
 GlobalFonts.registerFromPath(path.join(PDFJS_ROOT, 'standard_fonts', 'LiberationSans-Bold.ttf'), FONT);
 
 /**
