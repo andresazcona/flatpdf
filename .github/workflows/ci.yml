@@ -66,6 +66,10 @@ jobs:
       contents: read
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      TF_VAR_image_tag: ${{ github.sha }}
+      TF_VAR_api_key_sha256: ${{ secrets.API_KEY_SHA256 }}
+      TF_VAR_alarm_email: ${{ vars.ALARM_EMAIL }}
+      TF_VAR_certificate_arn: ${{ vars.CERTIFICATE_ARN }}
     steps:
       - uses: actions/checkout@v4
       - uses: aws-actions/configure-aws-credentials@v4
@@ -92,4 +96,4 @@ jobs:
           done
       - name: Apply
         working-directory: infra
-        run: terraform apply -auto-approve -var="image_tag=${GITHUB_SHA}"
+        run: terraform apply -auto-approve
