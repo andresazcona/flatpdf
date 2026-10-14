@@ -1,0 +1,176 @@
+openapi: 3.0.3
+info:
+  title: flatpdf
+  version: 2.0.0
+  description: |
+    Flatten PDFs into image-only copies with per-recipient watermarks. Every page is rasterized and
+    rebuilt as an image, so text cannot be selected or copied, and each recipient receives their own
+    stamped copy so a leaked file can be traced back.
+
+    Jobs are asynchronous: submit a PDF, poll the job, download from the expiring URL(s).
+    Results and download links expire; request the job again for a fresh link until the job itself expires.
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+servers:
+  - url: http://localhost:3000
+    description: Local development
+security:
+  - ApiKey: []
+paths:
+  /healthz:
+    get:
+      summary: Liveness probe
+      security: []
+      responses:
+        '200':
+          description: Service is up
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+  /v1/jobs:
+    post:
+      summary: Submit a PDF for flattening
+      description: |
+        Validates the upload (content type, `%PDF-` magic bytes, page count) and queues the job.
+        With watermarking on, one flattened copy is produced per `recipient`.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: The PDF. Must be sent as `application/pdf` and start with `%PDF-`.
+                recipient:
+                  type: array
+                  items: { type: string, maxLength: 120 }
+                  description: |
+                    Repeat the field for several recipients (for example an email address). Required unless
+                    `watermark=false`. Duplicates are removed; the count is capped by `MAX_RECIPIENTS`.
+                watermark:
+                  type: string
+                  enum: ['true', 'false']
+                  default: 'true'
+                  description: Set to `false` to produce a single unstamped, flattened copy.
+            encoding:
+              recipient:
+                style: form
+                explode: true
+      responses:
+        '202':
+          description: Job accepted
+          headers:
+            Location:
+              schema: { type: string, example: /v1/jobs/4f1c2a8e-6b0d-4f0e-9a43-0c5b8d9a7e21 }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [jobId, status]
+                properties:
+                  jobId: { type: string, format: uuid }
+                  status: { type: string, enum: [queued] }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '413': { $ref: '#/components/responses/TooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMedia' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+  /v1/jobs/{id}:
+    get:
+      summary: Job status and download URLs
+      description: |
+        Jobs are visible only to the API key that created them. While `status` is `done`, each call returns
+        freshly signed download URLs that expire after `urlExpiresAt`. After the job's `expiresAt` the result
+        is deleted and the endpoint answers `410`.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Current job state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: Unknown job, or it belongs to another key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '410':
+          description: The job and its results have expired
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+components:
+  securitySchemes:
+    ApiKey:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: Compared in constant time against configured SHA-256 digests.
+  schemas:
+    Job:
+      type: object
+      required: [id, status, pages, createdAt, updatedAt, expiresAt]
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [queued, processing, done, failed, expired] }
+        pages: { type: integer, example: 12 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time, description: When the job and its results are deleted }
+        error: { type: string, description: Present when status is failed }
+        outputs:
+          type: array
+          description: Present when status is done. One entry per recipient, in request order.
+          items:
+            type: object
+            required: [bytes, sha256, url, urlExpiresAt]
+            properties:
+              recipient: { type: string, nullable: true, description: Null for an unstamped copy }
+              bytes: { type: integer }
+              sha256: { type: string, description: SHA-256 of the output PDF, for leak forensics }
+              url: { type: string, format: uri, description: Signed download URL }
+              urlExpiresAt: { type: string, format: date-time }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+  responses:
+    BadRequest:
+      description: Missing file, missing recipient, or an invalid field
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Missing or invalid `x-api-key`
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    TooLarge:
+      description: Upload exceeds `MAX_UPLOAD_MB`
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    UnsupportedMedia:
+      description: Not `application/pdf`, or the bytes do not start with `%PDF-`
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unprocessable:
+      description: Unreadable or password-protected PDF, or more than `MAX_PAGES` pages
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
